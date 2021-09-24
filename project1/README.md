@@ -34,6 +34,7 @@ The following table depits the performace measure for the given number of worker
 | 400      | 2.052                            |
 | 500      | 2.036                            |
 | 700      | 1.969                            |
+
 According to the above observations, our best workUnit value is approximately 250 and we believe that all the values below 250 did not perform as well because of the network overhead.
 
 ### Steps to run the program
