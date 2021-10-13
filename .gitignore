@@ -13,4 +13,8 @@ obj/
 # Log files
 .log
 
+# Extra
+*.zip
+project2/results/
+
 # End of https://www.toptal.com/developers/gitignore/api/dotnetcore
