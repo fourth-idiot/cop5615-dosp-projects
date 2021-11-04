@@ -192,6 +192,25 @@ let myActor (nodeID: int) m maxNumRequests hopCounterRef (mailbox: Actor<_>) =
             let key = (System.Random()).Next(hashSpace)
             mailbox.Self <! FindKeySuccessor (nodeID, key, 0)
 
+        // // Simple key lookup
+        // | FindKeySuccessor (originNodeID, id, numHops) ->
+        //     if(id = nodeID) then
+        //         // printfn "Key %d is at the node %d in %d hops" id nodeID numHops
+        //         let originNodePath = getActorPath originNodeID
+        //         let originNodeRef = mailbox.Context.ActorSelection originNodePath
+        //         originNodeRef <! FoundKey (numHops)
+        //     elif(inBetweenWithoutLeftWithRight hashSpace nodeID id fingerTable.[0]) then
+        //         // printfn "Key %d is at the node %d in %d hops" id fingerTable.[0] numHops
+        //         let originNodePath = getActorPath originNodeID
+        //         let originNodeRef = mailbox.Context.ActorSelection originNodePath
+        //         originNodeRef <! FoundKey (numHops)
+        //     else
+        //         let successorID = fingerTable.[0]
+        //         let successorPath = getActorPath successorID
+        //         let successorRef = mailbox.Context.ActorSelection successorPath
+        //         successorRef <! FindKeySuccessor (originNodeID, id, numHops + 1)
+
+        // Scalable key lookup
         | FindKeySuccessor (originNodeID, id, numHops) ->
             if(id = nodeID) then
                 // printfn "Key %d is at the node %d in %d hops" id nodeID numHops
@@ -239,7 +258,7 @@ let main argv =
     // Spawn hopCounter
     let hopCounterRef = spawn system "hopCounter" (hopCounter numNodes)
 
-    // Test 1: Known nodes
+    // // Test 1: Known nodes
     // // Spawn nodes
     // let nodeIDs = [1; 8; 14; 21; 32; 38; 42; 48; 51; 56]
     // let mutable nodeRefs = Array.create nodeIDs.Length null
@@ -251,13 +270,14 @@ let main argv =
     //         nodeRefs.[i] <! Join(1)
     //     Thread.Sleep(100)
     // // Wait for some time to get system stabilized
+    // printfn "Waiting for 30 sec to get system stabilized"
     // Thread.Sleep(30000)
     // // Start querying
-    // // nodeRefs.[1] <! StartQuerying
-    // // Start querying
-    // for nodeRef in nodeRefs do
-    //     nodeRef <! StartQuerying
-    //     Thread.Sleep(100)
+    // nodeRefs.[1] <! FindKeySuccessor (nodeIDs.[1], 54, 0);
+    // // // Start querying
+    // // for nodeRef in nodeRefs do
+    // //     nodeRef <! StartQuerying
+    // //     Thread.Sleep(100)
 
     // Test 2: Unknown nodes
     // Spawn nodes

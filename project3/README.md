@@ -5,16 +5,38 @@
 - Srikanth Rao Parcha (UFID: 46324560)
 
 ## What is working:
+- Simple key lookup which follows linear trend and scalable key lookup which follows logarithmic trend, both.
 - Initial node is created statically.
 - Rest of the nodes are dynamically created and placed into the chord ring based on consistent hashing.
-- Successor of both node and key are found using finger tables and scalable lookup algorithm mentioned in the paper.
-- Calculation of average hop count after all node serves specified number of requests.
+- Successor of node and key, both are found using finger tables and scalable lookup algorithm mentioned in the paper.
+- Calculation of average hop count after all nodes serve specified number of requests.
 
 ## Largest network we dealt with:
 Number of Nodes: 10000 , Number of Requests: 10
 
 ## Relation between number of nodes and average hop count:
-We have tested our implementation on nodes ranging in number from 5 to 10000. Correspoding observations are as follows:
+### Simple key lookup:
+We have tested our implementation on nodes ranging in number from 5 to 500. Corresponding observations are as follows:
+| Number of nodes | Average hop count |
+|----------|-----------------|
+| 5        | 2.10     |
+| 10       | 4.81     |
+| 20       | 9.18     |
+| 30       | 14.40    |
+| 40       | 19.93    |
+| 50       | 24.30    |
+| 100      | 49.17    |
+| 200      | 97.91    |
+| 300      | 149.18   |
+| 400      | 201.49   |
+| 500      | 251.06   |
+
+![alt text](simple_key_lookup.png)
+
+From the above chart, it is clear that average hop count is following a linear relationship with number of nodes, as explained in the paper.
+
+### Scalable key lookup
+We have tested our implementation on nodes ranging in number from 5 to 10000. Corresponding observations are as follows:
 | Number of nodes | Average hop count |
 |----------|-----------------|
 | 5        | 1.36     |
@@ -39,9 +61,9 @@ We have tested our implementation on nodes ranging in number from 5 to 10000. Co
 | 5000     | 14.05    |
 | 10000    | 15.43    |
 
-![alt text](results.png)
+![alt text](scalable_key_lookup.png)
 
-From the above chart, it is clear that average hop count is following a logarithmic relationship with number of nodes, as explained in the paper.
+From the above chart, it is clear that average hop count is following a logarithmic relationship with number of nodes, as explained in the paper. It is evident that use of finger table reduces the average number of hops drastically.
 
 ## Assumptions that we have made about things not clearly mentioned in the paper:
 - For the first node, we are intializing the whole finger table with its own value.
