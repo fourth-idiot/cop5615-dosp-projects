@@ -18,33 +18,33 @@ type userManagementMessages =
     | Subscribe of (string * string * string)
     | ValidateUserForTweet of (string * string)
     | ValidateUserForRetweet of (string * int)
-    | ValidateUserForMentions of (string * int)
-    | UsersToUpdateNewsFeedByTweet of (string * int)
-    | UsersToUpdateNewsFeedByRetweet of (string * int)
-    | UsersToUpdateNewsFeedByTweetWithHashtag of (string * int)
+    | ValidateUserForMentions of (string * string)
+    | UsersToUpdateNewsFeedByTweet of (string * string)
+    | UsersToUpdateNewsFeedByRetweet of (string * string)
+    | UsersToUpdateNewsFeedByTweetWithHashtag of (string * string)
     | ValidateUserForQueryTweetsSubscribedTo of (string)
     | ValidateUserForQueryTweetsWithMentions of (string)
     | GetRegisteredHashtags of (string)
 
 type newsFeedActor =
     | CreateFeed of (string)
-    | UpdateNewsFeedByTweet of (string * int)
-    | UpdateNewsFeedByTweetForward of (Set<string> * int)
-    | UpdateNewsFeedByRetweet of (string * int)
-    | UpdateNewsFeedByRetweetForward of (Set<string> * int)
-    | UpdateNewsFeedByTweetWithHashtag of (Set<string> * int)
+    | UpdateNewsFeedByTweet of (string * string)
+    | UpdateNewsFeedByTweetForward of (Set<string> * Set<string> * string)
+    | UpdateNewsFeedByRetweet of (string * string)
+    | UpdateNewsFeedByRetweetForward of (Set<string> * Set<string> * string)
+    | UpdateNewsFeedByTweetWithHashtag of (Set<string> * Set<string> * string)
     | QueryTweetsSubscribedTo of (string)
     | QueryTweetsSubscribedToForward of (string * bool)
 
 type mentionsActor =
-    | UpdateMentionsFeed of (string * int)
+    | UpdateMentionsFeed of (string * bool * string)
     | QuerytweetsWithMentions of (string)
     | QuerytweetsWithMentionsForward of (string * bool)
 
 type tweetParserMessages =
-    | Parse of (int * string)
-    | ParseForwardForUser of (string * bool * int)
-    | ParseForwardForHashtag of (Set<string> * int)
+    | Parse of (string)
+    | ParseForwardForUser of (string * bool * bool * string)
+    | ParseForwardForHashtag of (Set<string> * Set<string> * string)
     | QueryTweetsWithHashtag of (string)
 
 type tweetManagementMessages =
@@ -168,26 +168,32 @@ let userManagementActor (mailbox: Actor<_>) =
                 let errorMessage = ""
                 sender <! RetweetForward(username, tweetId, status, errorMessage)
 
-        | ValidateUserForMentions(mentions, tweetId) ->
+        | ValidateUserForMentions(mentions, tweet) ->
             let mutable isRegistered = false
+            let mutable isActive = false
             if(users.ContainsKey mentions) then
                 isRegistered <- true
-            sender <! ParseForwardForUser(mentions, isRegistered, tweetId)
+                if(activeUsers.Contains mentions) then
+                    isActive <- true
+            sender <! ParseForwardForUser(mentions, isRegistered, isActive, tweet)
 
-        | UsersToUpdateNewsFeedByTweet(username, tweetId) ->
+        | UsersToUpdateNewsFeedByTweet(username, tweet) ->
             let allFollowers = followers.[username]
-            sender <! UpdateNewsFeedByTweetForward(allFollowers, tweetId)
+            let activeFollowers = Set.intersect allFollowers activeUsers
+            sender <! UpdateNewsFeedByTweetForward(allFollowers, activeFollowers, tweet)
         
-        | UsersToUpdateNewsFeedByRetweet(username, tweetId) ->
+        | UsersToUpdateNewsFeedByRetweet(username, tweet) ->
             let allFollowers = followers.[username]
-            sender <! UpdateNewsFeedByRetweetForward(allFollowers, tweetId)
+            let activeFollowers = Set.intersect allFollowers activeUsers
+            sender <! UpdateNewsFeedByRetweetForward(allFollowers, activeFollowers, tweet)
 
-        | UsersToUpdateNewsFeedByTweetWithHashtag(hashtag, tweetId) ->
+        | UsersToUpdateNewsFeedByTweetWithHashtag(hashtag, tweet) ->
             if(not(subscribers.ContainsKey hashtag )) then
                 subscribers <- Map.add hashtag Set.empty subscribers
-                printfn "[Tweet] New hashtag from tweet %d in %s registered successfully" tweetId hashtag
+                printfn "[Tweet] New hashtag from tweet %s in %s registered successfully" tweet hashtag
             let allSubscribers = subscribers.[hashtag]
-            sender <! ParseForwardForHashtag(allSubscribers, tweetId)
+            let activeFollowers = Set.intersect allSubscribers activeUsers
+            sender <! ParseForwardForHashtag(allSubscribers, activeFollowers, tweet)
 
         | ValidateUserForQueryTweetsSubscribedTo(username) ->
             let mutable status = false
@@ -220,50 +226,62 @@ let newsFeedActor userManagementRef (mailbox: Actor<_>) =
         // Handle message here
         match message with
         | CreateFeed(username) ->
-            newsFeed <- Map.add username Set.empty newsFeed
+            newsFeed <- Map.add username List.empty newsFeed
             printfn "News feed for %s created successfully" username
 
-        | UpdateNewsFeedByTweet(username, tweetId) ->
-            userManagementRef <! UsersToUpdateNewsFeedByTweet(username, tweetId)
+        | UpdateNewsFeedByTweet(username, tweet) ->
+            userManagementRef <! UsersToUpdateNewsFeedByTweet(username, tweet)
 
-        | UpdateNewsFeedByTweetForward(allFollowers, tweetId) ->
+        | UpdateNewsFeedByTweetForward(allFollowers, activeFollowers, tweet) ->
             for follower in allFollowers do
                 // Update news feed
                 if(newsFeed.ContainsKey follower) then
                     let mutable followerNewsFeed = newsFeed.[follower]
-                    followerNewsFeed <- Set.add tweetId followerNewsFeed
+                    followerNewsFeed <- List.append followerNewsFeed [tweet]
+                    if(followerNewsFeed.Length > 100) then
+                        followerNewsFeed <- followerNewsFeed[1..]
                     newsFeed <- Map.remove follower newsFeed
                     newsFeed <- Map.add follower followerNewsFeed newsFeed
                 else
-                    newsFeed <- Map.add follower (Set.empty.Add(tweetId)) newsFeed
-                printfn "[News feed] Tweet %d added to the news feed of follower %s" tweetId follower
+                    newsFeed <- Map.add follower [tweet] newsFeed
+                if(activeFollowers.Contains follower) then
+                    printfn "[News feed][%s] %s" follower tweet 
+                // printfn "[News feed] Tweet %d added to the news feed of follower %s" tweetId follower
 
-        | UpdateNewsFeedByRetweet(username, tweetId) ->
-            userManagementRef <! UsersToUpdateNewsFeedByRetweet(username, tweetId)
+        | UpdateNewsFeedByRetweet(username, tweet) ->
+            userManagementRef <! UsersToUpdateNewsFeedByRetweet(username, tweet)
 
-        | UpdateNewsFeedByRetweetForward(allFollowers, tweetId) ->
+        | UpdateNewsFeedByRetweetForward(allFollowers, activeFollowers, tweet) ->
             for follower in allFollowers do
                 // Update news feed
                 if(newsFeed.ContainsKey follower) then
                     let mutable followerNewsFeed = newsFeed.[follower]
-                    followerNewsFeed <- Set.add tweetId followerNewsFeed
+                    followerNewsFeed <- List.append followerNewsFeed [tweet]
+                    if(followerNewsFeed.Length > 100) then
+                        followerNewsFeed <- followerNewsFeed[1..]
                     newsFeed <- Map.remove follower newsFeed
                     newsFeed <- Map.add follower followerNewsFeed newsFeed
                 else
-                    newsFeed <- Map.add follower (Set.empty.Add(tweetId)) newsFeed
-                printfn "[News feed] Retweet %d added to the news feed of follower %s" tweetId follower
+                    newsFeed <- Map.add follower [tweet] newsFeed
+                if(activeFollowers.Contains follower) then
+                    printfn "[News feed][%s] %s" follower tweet
+                // printfn "[News feed] Retweet %d added to the news feed of follower %s" tweetId follower
 
-        | UpdateNewsFeedByTweetWithHashtag(allSubscribers, tweetId) ->
+        | UpdateNewsFeedByTweetWithHashtag(allSubscribers, activeSubscribers, tweet) ->
             for subscriber in allSubscribers do
                 // Update news feed
                 if(newsFeed.ContainsKey subscriber) then
                     let mutable followerNewsFeed = newsFeed.[subscriber]
-                    followerNewsFeed <- Set.add tweetId followerNewsFeed
+                    followerNewsFeed <- List.append followerNewsFeed [tweet]
+                    if(followerNewsFeed.Length > 100) then
+                        followerNewsFeed <- followerNewsFeed[1..]
                     newsFeed <- Map.remove subscriber newsFeed
                     newsFeed <- Map.add subscriber followerNewsFeed newsFeed
                 else
-                    newsFeed <- Map.add subscriber (Set.empty.Add(tweetId)) newsFeed
-                printfn "[News feed] Tweet with hashtag %d added to the news feed of follower %s" tweetId subscriber
+                    newsFeed <- Map.add subscriber [tweet] newsFeed
+                if(activeSubscribers.Contains subscriber) then
+                    printfn "[News feed][%s] %s" subscriber tweet
+                // printfn "[News feed] Tweet with hashtag %d added to the news feed of follower %s" tweetId subscriber
 
         | QueryTweetsSubscribedTo(username) ->
             // Validate user
@@ -292,15 +310,19 @@ let mentionsFeedActor userManagementRef (mailbox: Actor<_>) =
         let! message = mailbox.Receive ()
         // Handle message here
         match message with
-        | UpdateMentionsFeed(mentions, tweetId) ->
+        | UpdateMentionsFeed(mentions, isActive, tweet) ->
             // Update mentions feed
             if(mentionsFeed.ContainsKey mentions) then
                 let mutable mentionsMentionsFeed = mentionsFeed.[mentions]
-                mentionsMentionsFeed <- Set.add tweetId mentionsMentionsFeed
+                mentionsMentionsFeed <- List.append mentionsMentionsFeed [tweet]
+                if(mentionsMentionsFeed.Length > 100) then
+                        mentionsMentionsFeed <- mentionsMentionsFeed[1..]
                 mentionsFeed <- Map.remove mentions mentionsFeed
                 mentionsFeed <- Map.add mentions mentionsMentionsFeed mentionsFeed
             else
-                mentionsFeed <- Map.add mentions (Set.empty.Add(tweetId)) mentionsFeed
+                mentionsFeed <- Map.add mentions [tweet] mentionsFeed
+            if(isActive) then
+                printfn "[Mentions][%s] %s" mentions tweet
 
         | QuerytweetsWithMentions(mentions) ->
             // Validate user
@@ -313,7 +335,7 @@ let mentionsFeedActor userManagementRef (mailbox: Actor<_>) =
                 else
                     printfn "[Mentions] User %s has no mentions" mentions
             else
-                printfn "[Mnetions] User %s is either not registered or not active" mentions
+                printfn "[Mentions] User %s is either not registered or not active" mentions
         
         return! loop ()
     }
@@ -323,14 +345,14 @@ let mentionsFeedActor userManagementRef (mailbox: Actor<_>) =
 let tweetParserActor userManagementRef newsFeedRef mentionsRef (mailbox: Actor<_>) =
 
     // Data to store
-    let mutable hashtagsTweets:Map<string, Set<int>> = Map.empty
+    let mutable hashtagsTweets = Map.empty
 
     let rec loop () = actor {
         let! message = mailbox.Receive ()
         
         // Handle message here
         match message with
-        | Parse(tweetId, tweet) ->
+        | Parse(tweet) ->
             // Find hashtags
             let mutable (hashtags:Set<string>) = Set.empty;
             let hashtagRegex = new Regex(@"#\w+")
@@ -340,13 +362,15 @@ let tweetParserActor userManagementRef newsFeedRef mentionsRef (mailbox: Actor<_
                 hashtags <- Set.add hashtag hashtags
                 if(hashtagsTweets.ContainsKey hashtag) then
                     let mutable hashtagTweets = hashtagsTweets[hashtag]
-                    hashtagTweets <- Set.add tweetId hashtagTweets
+                    hashtagTweets <- List.append hashtagTweets [tweet]
+                    if(hashtagTweets.Length > 100) then
+                        hashtagTweets <- hashtagTweets[1..]
                     hashtagsTweets <- Map.remove hashtag hashtagsTweets
                     hashtagsTweets <- Map.add hashtag hashtagTweets hashtagsTweets
                 else
-                    hashtagsTweets <- Map.add hashtag (Set.empty.Add(tweetId)) hashtagsTweets
+                    hashtagsTweets <- Map.add hashtag [tweet] hashtagsTweets
                 // Validate hashtag
-                userManagementRef <! UsersToUpdateNewsFeedByTweetWithHashtag(hashtag, tweetId)
+                userManagementRef <! UsersToUpdateNewsFeedByTweetWithHashtag(hashtag, tweet)
 
             // Find mentions
             let mentionsRegex = new Regex(@"@\w+")
@@ -354,14 +378,14 @@ let tweetParserActor userManagementRef newsFeedRef mentionsRef (mailbox: Actor<_
             for mentionsMatch in mentionsMatches do
                 let mentions = mentionsMatch.Value.Substring(1)
                 // Validate mentions
-                userManagementRef <! ValidateUserForMentions(mentions, tweetId)
+                userManagementRef <! ValidateUserForMentions(mentions, tweet)
 
-        | ParseForwardForUser(mentions, isRegistered, tweetId) ->
+        | ParseForwardForUser(mentions, isRegistered, isActive, tweet) ->
             if(isRegistered) then
-                mentionsRef <! UpdateMentionsFeed(mentions, tweetId)
+                mentionsRef <! UpdateMentionsFeed(mentions, isActive, tweet)
                 
-        | ParseForwardForHashtag(allSubscribers, tweetId) ->
-            newsFeedRef <! UpdateNewsFeedByTweetWithHashtag(allSubscribers, tweetId)
+        | ParseForwardForHashtag(allSubscribers, activeSubscribers, tweet) ->
+            newsFeedRef <! UpdateNewsFeedByTweetWithHashtag(allSubscribers, activeSubscribers, tweet)
 
         | QueryTweetsWithHashtag(hashtag) ->
             if(hashtagsTweets.ContainsKey hashtag) then
@@ -392,14 +416,14 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
         | TweetForward(username, tweet, status, errorMessage) ->
             if(status) then
                 // Process the tweet further if user is validated
-                printfn "[Tweet] User %s validated" username
+                // printfn "[Tweet] User %s validated" username
                 // Send tweet to the news feed actor
-                printfn "[Tweet] User %s tweeted: %s" username tweet
-                let tweetId = tweets.Length
+                // printfn "[Tweet] User %s tweeted: %s" username tweet
+                // let tweetId = tweets.Length
                 tweets <- List.append tweets [[username; tweet]]
-                newsFeedRef <! UpdateNewsFeedByTweet(username, tweetId)
+                newsFeedRef <! UpdateNewsFeedByTweet(username, tweet)
                 // Send tweet to the tweet parser actor
-                tweetParserRef <! Parse(tweetId, tweet)
+                tweetParserRef <! Parse(tweet)
             else
                 printfn "[Tweet] Could not validate user %s due to %s" username errorMessage
 
@@ -418,7 +442,8 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
                 printfn "[Retweet] User %s validated" username
                 // Process the tweet further if tweet exists
                 if(tweetId < tweets.Length) then
-                    newsFeedRef <! UpdateNewsFeedByRetweet(username, tweetId)
+                    let tweet = tweets.[tweetId].[1]
+                    newsFeedRef <! UpdateNewsFeedByRetweet(username, tweet)
                 else
                     printfn "[Retweet] Tweet does not exist"
             else
@@ -429,7 +454,7 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
     loop ()
 
 
-let serverActor userManagementRef tweetManagementRef (mailbox: Actor<_>) = 
+let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetManagementRef (mailbox: Actor<_>) = 
     let rec loop () = actor {
 
         let! (message:obj) = mailbox.Receive ()
@@ -459,6 +484,7 @@ let serverActor userManagementRef tweetManagementRef (mailbox: Actor<_>) =
 
         | "AcknowledgeUserLogin" ->
             let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
+            newsFeedRef <! QueryTweetsSubscribedTo(username)
             let clientRef = mailbox.Context.System.ActorSelection(clientPath)
             clientRef <! ("AcknowledgeUserLogin", username, "")
 
@@ -509,6 +535,18 @@ let serverActor userManagementRef tweetManagementRef (mailbox: Actor<_>) =
             let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
             tweetManagementRef <! RandomRetweet(username)
 
+        | "QueryTweetsSubscribedTo" ->
+            let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
+            newsFeedRef <! QueryTweetsSubscribedTo(username)
+
+        | "QueryTweetsWithHashtag" ->
+            let ((_, hashtag, _, _): Tuple<string, string, string, string>) = downcast message
+            tweetParserRef <! QueryTweetsWithHashtag(hashtag)
+
+        | "QueryTweetsWithMentions" ->
+            let ((_, mentions, _, _): Tuple<string, string, string, string>) = downcast message
+            mentionsRef <! QuerytweetsWithMentions(mentions)
+
         return! loop ()
     }
     loop ()
@@ -537,7 +575,7 @@ let main argv =
     let mentionsRef = spawn system "mentionsActor" (mentionsFeedActor userManagementRef)
     let tweetParserRef = spawn system "tweetParserActor" (tweetParserActor userManagementRef newsFeedRef mentionsRef)
     let tweetManagementRef = spawn system "tweetManagementActor" (tweetManagementActor userManagementRef newsFeedRef tweetParserRef)
-    let serverRef = spawn system "serverActor" (serverActor userManagementRef tweetManagementRef)
+    let serverRef = spawn system "serverActor" (serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetManagementRef)
 
     // // User registration
     // userManagementRef <! Register("nikhil_saoji", "nikhil_saoji")

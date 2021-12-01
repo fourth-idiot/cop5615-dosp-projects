@@ -36,10 +36,11 @@ let userActor (mailbox: Actor<_>) =
 
         | Action ->
             if isOnline then
-                let actions = [1; 2; 3; 4]
+                let actions = [1; 2; 3; 4; 5; 6; 7]
                 let action = actions.[(new Random()).Next(actions.Length)]
                 match action with
-                // Tweet
+                // 1 -> Tweet, 2 -> Tweet with only hashtag, 3 -> Tweet with both hashtag and mentions, 4 -> Retweet
+                // 5 -> Query tweets subscribed to, 6. Query tweets with hashtag, 7. Query tweets with mentions
                 | 1 ->
                     tweetCount <- tweetCount + 1
                     let tweet = sprintf "%s tweeted -> tweet_%d" username tweetCount
@@ -56,8 +57,15 @@ let userActor (mailbox: Actor<_>) =
                     let tweet = sprintf "%s tweeted -> tweet_%d with hashtag %s and mentions @%s" username tweetCount hashtag mentions
                     serverRef <! ("Tweet", username, tweet, "")
                 | 4 ->
-                    printfn "%s doing retweet" username
+                    printfn "[User] %s doing retweet" username
                     serverRef <! ("Retweet", username, "", "")
+                | 5 ->
+                    serverRef <! ("QueryTweetsSubscribedTo", username, "", "")
+                | 6 ->
+                    let hashtag = allHashtags.[(new Random()).Next(allHashtags.Length)]
+                    serverRef <! ("QueryTweetsWithHashtag", hashtag, "", "")
+                | 7 ->
+                    serverRef <! ("QueryTweetsWithMentions", username, "", "")
                 | _ ->
                     ignore()
                 
@@ -65,12 +73,12 @@ let userActor (mailbox: Actor<_>) =
         
         | GoOnline ->
             isOnline <- true
-            printfn "%s logged in successfully" username
+            printfn "[User] %s logged in successfully. Getting newsfeed..." username
             mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(1000.0), mailbox.Self, Action)
 
         | GoOffline ->
             isOnline <- false
-            printfn "%s logged out successfully" username
+            printfn "[User] %s logged out successfully" username
 
         return! loop ()
         
@@ -219,17 +227,13 @@ let adminActor (mailbox: Actor<_>) =
                     users
                     |> Set.toList
                     |> (fun s -> s.[(new Random()).Next(s.Length)])
-                printfn "%s" nextOffline
                 while((currentOffline.Contains nextOffline) || (newOffline.Contains(nextOffline))) do
-                    printfn "$$$"
                     nextOffline <-
                         users
                         |> Set.toList
                         |> (fun s -> s.[(new Random()).Next(s.Length)])
-                printfn "%s" nextOffline
                 serverRef <! ("Logout", nextOffline, "", "")
                 newOffline <- Set.add nextOffline newOffline
-            printfn "%A" currentOffline
             for nextOnline in currentOffline do
                 serverRef <! ("Login", nextOnline, nextOnline, "")
 
