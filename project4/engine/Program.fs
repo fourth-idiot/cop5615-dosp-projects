@@ -2,19 +2,20 @@
 
 #if INTERACTIVE
 #r "nuget: Akka.FSharp"
+#r "nuget: Akka.Remote"
 #endif
 
 open System
+open System.Threading
 open System.Text.RegularExpressions
 open Akka.FSharp
-open System.Threading
 
 type userManagementMessages =
-    | Register of (string * string)
-    | Login of (string * string)
-    | Logout of (string)
-    | Follow of (string * string)
-    | Subscribe of (string * string)
+    | Register of (string * string * string)
+    | Login of (string * string * string)
+    | Logout of (string * string)
+    | Follow of (string * string * string)
+    | Subscribe of (string * string * string)
     | ValidateUserForTweet of (string * string)
     | ValidateUserForRetweet of (string * int)
     | ValidateUserForMentions of (string * int)
@@ -23,6 +24,7 @@ type userManagementMessages =
     | UsersToUpdateNewsFeedByTweetWithHashtag of (string * int)
     | ValidateUserForQueryTweetsSubscribedTo of (string)
     | ValidateUserForQueryTweetsWithMentions of (string)
+    | GetRegisteredHashtags of (string)
 
 type newsFeedActor =
     | CreateFeed of (string)
@@ -48,6 +50,7 @@ type tweetParserMessages =
 type tweetManagementMessages =
     | Tweet of (string * string)
     | TweetForward of (string * string * bool * string)
+    | RandomRetweet of (string)
     | Retweet of (string * int)
     | RetweetForward of (string * int * bool * string)
 
@@ -61,37 +64,45 @@ let userManagementActor (mailbox: Actor<_>) =
     let mutable activeUsers = Set.empty
 
     let rec loop () = actor {
+
         let! message = mailbox.Receive ()
         let sender = mailbox.Sender ()
 
         // Handle message here
         match message with
-        | Register(username, password) ->
+        | Register(username, password, clientPath) ->
             users <- Map.add username password users
             followers <- Map.add username Set.empty followers
+            activeUsers <- Set.add username activeUsers
             printfn "[Register] User %s registered successfully." username
+            // Send acknowledgement to the client admin
+            sender <! ("AcknowledgeUserRegistration", username, clientPath, "")
 
-        | Login(username, password) ->
+        | Login(username, password, clientPath) ->
             if(users.ContainsKey username) then
                 if(password.Equals(users[username])) then
                     activeUsers <- Set.add username activeUsers
                     printfn "[Login] User %s logged in successfully" username
+                    // Send acknowledgement to the client admin
+                    sender <! ("AcknowledgeUserLogin", username, clientPath, "")
                 else
                     printfn "[Login] User %s entered wrong password. Please try again." username
             else
                 printfn "[Login] User %s is not registered." username
 
-        | Logout(username) ->
+        | Logout(username, clientPath) ->
             if(users.ContainsKey username) then
                 if(Set.contains username activeUsers) then
                     activeUsers <- Set.remove username activeUsers
                     printfn "[Logout] User %s logged out successfully." username
+                    // Send acknowledgement to the client admin
+                    sender <! ("AcknowledgeUserLogout", username, clientPath, "")
                 else
                     printfn "[Logout] User %s is not logged in." username
             else
                 printfn "[Logout] User %s is not registered." username
 
-        | Follow(follower, following) ->
+        | Follow(follower, following, clientPath) ->
             if(not(users.ContainsKey follower)) then
                 printfn "[Follow] Follower user %s is not registered." follower
             elif(not(followers.ContainsKey following)) then
@@ -108,22 +119,26 @@ let userManagementActor (mailbox: Actor<_>) =
                 followers <- Map.remove following followers
                 followers <- Map.add following followingFollowers followers
                 printfn "[Follow] User %s started following user %s" follower following
+                // Send acknowledgement to the client admin
+                sender <! ("AcknowledgeFollowRequest", follower, following, clientPath)
 
-        | Subscribe(follower, hashtag) ->
-            if(not(users.ContainsKey follower)) then
-                printfn "[Follow] Follower %s is not registered." follower
+        | Subscribe(subscriber, hashtag, clientPath) ->
+            if(not(users.ContainsKey subscriber)) then
+                printfn "[Follow] Follower %s is not registered." subscriber
             elif(not(subscribers.ContainsKey hashtag)) then
                 printfn "[Follow] Subscribing hashtag %s is not registered." hashtag
-            elif(not(activeUsers.Contains follower)) then
-                printfn "[Follow] Follower user %s is not logged in" follower
-            elif(subscribers.[hashtag].Contains follower) then
-                printfn "[Follow] User %s already follows hashtag %s" follower hashtag
+            elif(not(activeUsers.Contains subscriber)) then
+                printfn "[Follow] Follower user %s is not logged in" subscriber
+            elif(subscribers.[hashtag].Contains subscriber) then
+                printfn "[Follow] User %s already follows hashtag %s" subscriber hashtag
             else
                 let mutable hashtagSubscribers = subscribers.[hashtag]
-                hashtagSubscribers <- Set.add follower hashtagSubscribers
+                hashtagSubscribers <- Set.add subscriber hashtagSubscribers
                 subscribers <- Map.remove hashtag subscribers
                 subscribers <- Map.add hashtag hashtagSubscribers subscribers
-                printfn "[Follow] User %s started following %s" follower hashtag
+                printfn "[Follow] User %s started following %s" subscriber hashtag
+                // Send acknowledgement to the client admin
+                sender <! ("AcknowledgeSubscribeRequest", subscriber, hashtag, clientPath)
 
         | ValidateUserForTweet(username, tweet) ->
             if(not(users.ContainsKey username)) then
@@ -185,6 +200,9 @@ let userManagementActor (mailbox: Actor<_>) =
             if((users.ContainsKey mentions) && (activeUsers.Contains mentions)) then
                 status <- true
             sender <! QuerytweetsWithMentionsForward(mentions, status)
+
+        | GetRegisteredHashtags(clientPath) ->
+            sender <! ("GetRegistertedHashtagsForward", String.Join(",", subscribers.Keys), clientPath, "")
 
         return! loop ()
     }
@@ -319,7 +337,7 @@ let tweetParserActor userManagementRef newsFeedRef mentionsRef (mailbox: Actor<_
             let hashtagMatches = hashtagRegex.Matches(tweet)
             for hashtagMatch in hashtagMatches do
                 let hashtag = hashtagMatch.Value
-                hashtags <- Set.add hashtag hashtags;
+                hashtags <- Set.add hashtag hashtags
                 if(hashtagsTweets.ContainsKey hashtag) then
                     let mutable hashtagTweets = hashtagsTweets[hashtag]
                     hashtagTweets <- Set.add tweetId hashtagTweets
@@ -385,6 +403,11 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
             else
                 printfn "[Tweet] Could not validate user %s due to %s" username errorMessage
 
+        | RandomRetweet(username) ->
+            if(tweets.Length > 0) then
+                let tweetId = (new Random()).Next(tweets.Length)
+                mailbox.Self <! Retweet(username, tweetId)
+
         | Retweet(username, tweetId) ->
             // Validate user
             userManagementRef <! ValidateUserForRetweet(username, tweetId)
@@ -406,10 +429,107 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
     loop ()
 
 
+let serverActor userManagementRef tweetManagementRef (mailbox: Actor<_>) = 
+    let rec loop () = actor {
+
+        let! (message:obj) = mailbox.Receive ()
+        let sender = mailbox.Sender ()
+
+        let ((messageType, _, _, _): Tuple<string, string, string, string>) = downcast message
+        // Handle message here
+        match messageType with
+        | "RegisterSimulator" ->
+            printfn "[Server] Registering simulator."
+            sender <! ("AcknowledgeSimulatorRegistration", "", "")
+        
+        | "RegisterUser" ->
+            let ((_, username, password, _): Tuple<string, string, string, string>) = downcast message
+            let clientPath = sprintf "%A" sender.Path
+            userManagementRef <! Register(username, password, clientPath)
+
+        | "AcknowledgeUserRegistration" ->
+            let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
+            let clientRef = mailbox.Context.System.ActorSelection(clientPath)
+            clientRef <! ("AcknowledgeUserRegistration", username, "")
+
+        | "Login" ->
+            let ((_, username, password, _): Tuple<string, string, string, string>) = downcast message
+            let clientPath = sprintf "%A" sender.Path
+            userManagementRef <! Login(username, password, clientPath)
+
+        | "AcknowledgeUserLogin" ->
+            let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
+            let clientRef = mailbox.Context.System.ActorSelection(clientPath)
+            clientRef <! ("AcknowledgeUserLogin", username, "")
+
+        | "Logout" ->
+            let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
+            let clientPath = sprintf "%A" sender.Path
+            userManagementRef <! Logout(username, clientPath)
+
+        | "AcknowledgeUserLogout" ->
+            let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
+            let clientRef = mailbox.Context.System.ActorSelection(clientPath)
+            clientRef <! ("AcknowledgeUserLogout", username, "")
+
+        | "Follow" ->
+            let ((_, follower, following, _): Tuple<string, string, string, string>) = downcast message
+            let clientPath = sprintf "%A" sender.Path
+            userManagementRef <! Follow(follower, following, clientPath)
+
+        | "AcknowledgeFollowRequest" ->
+            let ((_, follower, following, clientPath): Tuple<string, string, string, string>) = downcast message
+            let clientRef = mailbox.Context.System.ActorSelection(clientPath)
+            clientRef <! ("AcknowledgeFollowRequest", follower, following)
+
+        | "GetRegisteredHashtags" ->
+            let clientPath = sprintf "%A" sender.Path
+            userManagementRef <! GetRegisteredHashtags(clientPath)
+
+        | "GetRegistertedHashtagsForward" ->
+            let ((_, hashtags, clientPath, _): Tuple<string, string, string, string>) = downcast message
+            let clientRef = mailbox.Context.System.ActorSelection(clientPath)
+            clientRef <! ("SubscribeForward", hashtags, "")
+
+        | "Subscribe" ->
+            let ((_, subscriber, hashtag, _): Tuple<string, string, string, string>) = downcast message
+            let clientPath = sprintf "%A" sender.Path
+            userManagementRef <! Subscribe(subscriber, hashtag, clientPath)
+
+        | "AcknowledgeSubscribeRequest" ->
+            let ((_, follower, hashtag, clientPath): Tuple<string, string, string, string>) = downcast message
+            let clientRef = mailbox.Context.System.ActorSelection(clientPath)
+            clientRef <! ("AcknowledgeSubscribeRequest", follower, hashtag)
+
+        | "Tweet" ->
+            let ((_, username, tweet, _): Tuple<string, string, string, string>) = downcast message
+            tweetManagementRef <! Tweet(username, tweet)
+
+        | "Retweet" ->
+            let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
+            tweetManagementRef <! RandomRetweet(username)
+
+        return! loop ()
+    }
+    loop ()
+
+
 [<EntryPoint>]
 let main argv =
-    // Create system
-    let system = System.create "my-system" (Configuration.load())
+    // Configuration
+    let config =
+        Configuration.parse
+            @"akka {
+                actor {
+                    provider = ""Akka.Remote.RemoteActorRefProvider, Akka.Remote""
+                }
+                remote.helios.tcp {
+                        port = 8080
+                        hostname = localhost
+                    }
+                }
+            }"
+    let system = System.create "TwitterEngine" config
 
     // Create all services
     let userManagementRef = spawn system "userManagementActor" userManagementActor
@@ -417,48 +537,50 @@ let main argv =
     let mentionsRef = spawn system "mentionsActor" (mentionsFeedActor userManagementRef)
     let tweetParserRef = spawn system "tweetParserActor" (tweetParserActor userManagementRef newsFeedRef mentionsRef)
     let tweetManagementRef = spawn system "tweetManagementActor" (tweetManagementActor userManagementRef newsFeedRef tweetParserRef)
+    let serverRef = spawn system "serverActor" (serverActor userManagementRef tweetManagementRef)
 
-    // User registration
-    userManagementRef <! Register("nikhil_saoji", "nikhil_saoji")
-    userManagementRef <! Register("gauri_bodke", "gauri_bodke")
-    userManagementRef <! Register("prasad_hadkar", "prasad_hadkar")
+    // // User registration
+    // userManagementRef <! Register("nikhil_saoji", "nikhil_saoji")
+    // userManagementRef <! Register("gauri_bodke", "gauri_bodke")
+    // userManagementRef <! Register("prasad_hadkar", "prasad_hadkar")
 
-    // Login
-    userManagementRef <! Login("nikhil_saoji", "nikhil_saoji")
-    userManagementRef <! Login("gauri_bodke", "gauri_bodke")
-    userManagementRef <! Login("prasad_hadkar", "prasad_hadkar")
+    // // Login
+    // userManagementRef <! Login("nikhil_saoji", "nikhil_saoji")
+    // userManagementRef <! Login("gauri_bodke", "gauri_bodke")
+    // userManagementRef <! Login("prasad_hadkar", "prasad_hadkar")
 
-    // Logout
-    // userManagementRef <! Logout("nikhil_saoji")
-    // userManagementRef <! Logout("gauri_bodke")
-    // userManagementRef <! Logout("prasad_hadkar")
+    // // // Logout
+    // // userManagementRef <! Logout("nikhil_saoji")
+    // // userManagementRef <! Logout("gauri_bodke")
+    // // userManagementRef <! Logout("prasad_hadkar")
 
-    // Follow
-    userManagementRef <! Follow("nikhil_saoji", "gauri_bodke")
-    userManagementRef <! Follow("nikhil_saoji", "prasad_hadkar")
-    userManagementRef <! Follow("prasad_hadkar", "gauri_bodke")
-    userManagementRef <! Follow("gauri_bodke", "prasad_hadkar")
+    // // Follow
+    // userManagementRef <! Follow("nikhil_saoji", "gauri_bodke")
+    // userManagementRef <! Follow("nikhil_saoji", "prasad_hadkar")
+    // userManagementRef <! Follow("prasad_hadkar", "gauri_bodke")
+    // userManagementRef <! Follow("gauri_bodke", "prasad_hadkar")
 
-    // Tweet
-    tweetManagementRef <! Tweet("gauri_bodke", "My name is Gauri #uf #hello. @nikhil_saoji")
-    tweetManagementRef <! Tweet("gauri_bodke", "I study at UF #uf #corona @prasad_hadkar")
-    tweetManagementRef <! Tweet("nikhil_saoji", "Hello! #corona @gauri_bodke @prasad_hadkar")
-    tweetManagementRef <! Tweet("prasad_hadkar", "I love cricket #bye")
+    // // Tweet
+    // tweetManagementRef <! Tweet("gauri_bodke", "My name is Gauri #uf #hello. @nikhil_saoji")
+    // tweetManagementRef <! Tweet("gauri_bodke", "I study at UF #uf #corona @prasad_hadkar")
+    // tweetManagementRef <! Tweet("nikhil_saoji", "Hello! #corona @gauri_bodke @prasad_hadkar")
+    // tweetManagementRef <! Tweet("prasad_hadkar", "I love cricket #bye")
 
-    // Retweet
-    tweetManagementRef <! Retweet("gauri_bodke", 2);
-    tweetManagementRef <! Retweet("nikhil_saoji", 1);
+    // // Retweet
+    // tweetManagementRef <! Retweet("gauri_bodke", 2);
+    // tweetManagementRef <! Retweet("nikhil_saoji", 1);
 
-    // Subscribe
-    Thread.Sleep(5000)
-    userManagementRef <! Subscribe("gauri_bodke", "#uf");
-    tweetManagementRef <! Tweet("nikhil_saoji", "I study at #uf");
-    Thread.Sleep(1000)
-    newsFeedRef <! QueryTweetsSubscribedTo("nikhil_saoji")
-    Thread.Sleep(1000)
-    tweetParserRef <! QueryTweetsWithHashtag("#uf")
-    Thread.Sleep(1000)
-    mentionsRef <! QuerytweetsWithMentions("prasad_hadkar")
+    // // Subscribe
+    // Thread.Sleep(5000)
+    // userManagementRef <! Subscribe("gauri_bodke", "#uf");
+    // tweetManagementRef <! Tweet("nikhil_saoji", "I study at #uf");
+    // Thread.Sleep(1000)
+    // newsFeedRef <! QueryTweetsSubscribedTo("nikhil_saoji")
+    // Thread.Sleep(1000)
+    // tweetParserRef <! QueryTweetsWithHashtag("#uf")
+    // Thread.Sleep(1000)
+    // mentionsRef <! QuerytweetsWithMentions("prasad_hadkar")
 
-    Thread.Sleep(6000)
+
+    Thread.Sleep(600000)
     0 // return an integer exit code
