@@ -63,6 +63,11 @@ The Twitter clone and simulator consists of two parts, the server and the simula
 3) Similarly, for the second hashtag, n/2 users subscribe to the hashtag, and for the third, n/3 users subscribe to the third hashtag, and so on for all the hashtags.
 
 
+### Zipf distribution in tweet and retweet frequency-
+1) The Zipf distribution is used to simulate how frequenty users on Twitter tweet and retweet. Users with the highest number followers tweets most frequently.
+2) Let t be tweet frequnecy of the user with the most number of subscribers, then for nth most followed user, the tweet frequncy will by n/t.
+
+
 
 ## Results
 
