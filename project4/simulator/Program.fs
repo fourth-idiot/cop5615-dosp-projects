@@ -15,6 +15,7 @@ type UserMessages =
 // User actor
 let userActor (mailbox: Actor<_>) =
     
+    let mutable uid = 0
     let mutable username = ""
     let mutable isOnline = false
     let mutable numUsers = 0
@@ -29,10 +30,11 @@ let userActor (mailbox: Actor<_>) =
         match message with
         | Ready(u, tu, ah, sRef) ->
             username <- u
+            uid <- int (username.Split "_").[1]
             isOnline <- true
             allHashtags <- ah
             serverRef <- sRef
-            mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(1000.0), mailbox.Self, Action)
+            mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds((float uid)), mailbox.Self, Action)
 
         | Action ->
             if isOnline then
@@ -69,12 +71,12 @@ let userActor (mailbox: Actor<_>) =
                 | _ ->
                     ignore()
                 
-                mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(1000.0), mailbox.Self, Action)
+                mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(10.0 * (float uid)), mailbox.Self, Action)
         
         | GoOnline ->
             isOnline <- true
             printfn "[User] %s logged in successfully. Getting newsfeed..." username
-            mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(1000.0), mailbox.Self, Action)
+            mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(10.0 * (float uid)), mailbox.Self, Action)
 
         | GoOffline ->
             isOnline <- false
@@ -146,9 +148,9 @@ let adminActor (mailbox: Actor<_>) =
         | "AcknowledgeSimulatorRegistration" ->
             printfn "[Admin] Simulator registered successfully. Starting user registration."
             mailbox.Self <! ("RegisterUser", "1", "")
-            mailbox.Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.FromMilliseconds(6000.0), TimeSpan.FromMilliseconds(5000.0), mailbox.Self, ("Follow", "", ""))
-            mailbox.Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.FromMilliseconds(6000.0), TimeSpan.FromMilliseconds(5000.0), mailbox.Self, ("Subscribe", "", ""))
-            mailbox.Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.FromMilliseconds(12000.0), TimeSpan.FromMilliseconds(10000.0), mailbox.Self, ("LoginLogout", "", ""))
+            mailbox.Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.FromMilliseconds(1000.0), TimeSpan.FromMilliseconds(1000.0), mailbox.Self, ("Follow", "", ""))
+            mailbox.Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.FromMilliseconds(1000.0), TimeSpan.FromMilliseconds(1000.0), mailbox.Self, ("Subscribe", "", ""))
+            mailbox.Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.FromMilliseconds(5000.0), TimeSpan.FromMilliseconds(5000.0), mailbox.Self, ("LoginLogout", "", ""))
 
         | "RegisterUser" ->
             let ((_, uid, _): Tuple<string, string, string>) = downcast message
@@ -160,7 +162,7 @@ let adminActor (mailbox: Actor<_>) =
             if(numUid < numUsers) then
                 let nextNumUid = numUid + 1
                 let nextStrUid  = nextNumUid |> string
-                mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(1000.0), mailbox.Self, ("RegisterUser", nextStrUid, ""))
+                mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(100.0), mailbox.Self, ("RegisterUser", nextStrUid, ""))
 
         | "AcknowledgeUserRegistration" ->
             let ((_, username, _): Tuple<string, string, string>) = downcast message
@@ -270,7 +272,17 @@ let main argv =
             }"
     let system = System.create "TwitterSimulator" config
 
+    let numUsers =
+        try
+            int argv.[0]
+        with
+            | _ ->
+                printfn "[INFO] Incorrect/Missing number of users, taking the default value as 100"
+                0
+    printfn "[INFO] Number of users: %d" numUsers
+
     let adminRef = spawn system "adminActor" adminActor
-    adminRef <! ("StartSimulator", "5", "")
-    Thread.Sleep(600000)
+    adminRef <! ("StartSimulator", (string numUsers), "")
+
+    Thread.Sleep(6000000)
     0 // return an integer exit code

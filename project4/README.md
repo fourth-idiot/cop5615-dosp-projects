@@ -69,7 +69,7 @@ The Twitter clone and simulator consists of two parts, the server and the simula
 
 
 
-## Results
+## Performance/Result
 
 | Number of users | Average number of request per second(upto 100,000 requests) |
 |----------|-----------------|

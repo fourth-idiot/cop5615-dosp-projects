@@ -6,9 +6,14 @@
 #endif
 
 open System
+open System.IO;
 open System.Threading
 open System.Text.RegularExpressions
 open Akka.FSharp
+
+
+type perfStatsMessages =
+    | PrintPerfStats of (string * string)
 
 type userManagementMessages =
     | Register of (string * string * string)
@@ -25,6 +30,7 @@ type userManagementMessages =
     | ValidateUserForQueryTweetsSubscribedTo of (string)
     | ValidateUserForQueryTweetsWithMentions of (string)
     | GetRegisteredHashtags of (string)
+    | CalculatePerfStats
 
 type newsFeedActor =
     | CreateFeed of (string)
@@ -54,10 +60,25 @@ type tweetManagementMessages =
     | Retweet of (string * int)
     | RetweetForward of (string * int * bool * string)
 
+
+let perfStatsActor perfStatsPath (mailbox: Actor<_>) =
+    let rec loop () = actor {
+        let! message = mailbox.Receive ()
+        // Handle message here
+        match message with
+        | PrintPerfStats(service, averageTime) ->
+            File.AppendAllText(perfStatsPath, (sprintf "%s = %s" service averageTime))
+        return! loop ()
+    }
+    loop ()
+
+
 // User management actor
-let userManagementActor (mailbox: Actor<_>) =
+let userManagementActor perfStatsRef (mailbox: Actor<_>) =
 
     // Data to store
+    let mutable requests = 0.0
+    let mutable totalTime = 0.0
     let mutable users = Map.empty
     let mutable followers = Map.empty
     let mutable (subscribers:Map<string, Set<string>>) = Map.empty
@@ -123,6 +144,7 @@ let userManagementActor (mailbox: Actor<_>) =
                 sender <! ("AcknowledgeFollowRequest", follower, following, clientPath)
 
         | Subscribe(subscriber, hashtag, clientPath) ->
+            requests <- requests + 1.0
             if(not(users.ContainsKey subscriber)) then
                 printfn "[Follow] Follower %s is not registered." subscriber
             elif(not(subscribers.ContainsKey hashtag)) then
@@ -246,7 +268,6 @@ let newsFeedActor userManagementRef (mailbox: Actor<_>) =
                     newsFeed <- Map.add follower [tweet] newsFeed
                 if(activeFollowers.Contains follower) then
                     printfn "[News feed][%s] %s" follower tweet 
-                // printfn "[News feed] Tweet %d added to the news feed of follower %s" tweetId follower
 
         | UpdateNewsFeedByRetweet(username, tweet) ->
             userManagementRef <! UsersToUpdateNewsFeedByRetweet(username, tweet)
@@ -265,7 +286,6 @@ let newsFeedActor userManagementRef (mailbox: Actor<_>) =
                     newsFeed <- Map.add follower [tweet] newsFeed
                 if(activeFollowers.Contains follower) then
                     printfn "[News feed][%s] %s" follower tweet
-                // printfn "[News feed] Retweet %d added to the news feed of follower %s" tweetId follower
 
         | UpdateNewsFeedByTweetWithHashtag(allSubscribers, activeSubscribers, tweet) ->
             for subscriber in allSubscribers do
@@ -281,7 +301,6 @@ let newsFeedActor userManagementRef (mailbox: Actor<_>) =
                     newsFeed <- Map.add subscriber [tweet] newsFeed
                 if(activeSubscribers.Contains subscriber) then
                     printfn "[News feed][%s] %s" subscriber tweet
-                // printfn "[News feed] Tweet with hashtag %d added to the news feed of follower %s" tweetId subscriber
 
         | QueryTweetsSubscribedTo(username) ->
             // Validate user
@@ -415,11 +434,6 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
 
         | TweetForward(username, tweet, status, errorMessage) ->
             if(status) then
-                // Process the tweet further if user is validated
-                // printfn "[Tweet] User %s validated" username
-                // Send tweet to the news feed actor
-                // printfn "[Tweet] User %s tweeted: %s" username tweet
-                // let tweetId = tweets.Length
                 tweets <- List.append tweets [[username; tweet]]
                 newsFeedRef <! UpdateNewsFeedByTweet(username, tweet)
                 // Send tweet to the tweet parser actor
@@ -454,7 +468,12 @@ let tweetManagementActor userManagementRef newsFeedRef tweetParserRef (mailbox: 
     loop ()
 
 
-let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetManagementRef (mailbox: Actor<_>) = 
+let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetManagementRef perfStatsPath (mailbox: Actor<_>) =
+
+    // Data to store
+    let mutable requests = 0.0
+    let mutable startTime = DateTime.Now
+
     let rec loop () = actor {
 
         let! (message:obj) = mailbox.Receive ()
@@ -463,14 +482,20 @@ let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetMa
         let ((messageType, _, _, _): Tuple<string, string, string, string>) = downcast message
         // Handle message here
         match messageType with
+        | "Start" ->
+            File.AppendAllText(perfStatsPath, (sprintf "requests, totalTime, averageRequestsPerSecond\n"))
+            mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(5000.0), mailbox.Self, ("PrintPerfStats", "", "", ""))
+
         | "RegisterSimulator" ->
             printfn "[Server] Registering simulator."
             sender <! ("AcknowledgeSimulatorRegistration", "", "")
-        
+            startTime <- DateTime.Now
+
         | "RegisterUser" ->
             let ((_, username, password, _): Tuple<string, string, string, string>) = downcast message
             let clientPath = sprintf "%A" sender.Path
             userManagementRef <! Register(username, password, clientPath)
+            requests <- requests + 1.0
 
         | "AcknowledgeUserRegistration" ->
             let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
@@ -481,6 +506,7 @@ let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetMa
             let ((_, username, password, _): Tuple<string, string, string, string>) = downcast message
             let clientPath = sprintf "%A" sender.Path
             userManagementRef <! Login(username, password, clientPath)
+            requests <- requests + 1.0
 
         | "AcknowledgeUserLogin" ->
             let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
@@ -492,6 +518,7 @@ let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetMa
             let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
             let clientPath = sprintf "%A" sender.Path
             userManagementRef <! Logout(username, clientPath)
+            requests <- requests + 1.0
 
         | "AcknowledgeUserLogout" ->
             let ((_, username, clientPath, _): Tuple<string, string, string, string>) = downcast message
@@ -502,6 +529,7 @@ let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetMa
             let ((_, follower, following, _): Tuple<string, string, string, string>) = downcast message
             let clientPath = sprintf "%A" sender.Path
             userManagementRef <! Follow(follower, following, clientPath)
+            requests <- requests + 1.0
 
         | "AcknowledgeFollowRequest" ->
             let ((_, follower, following, clientPath): Tuple<string, string, string, string>) = downcast message
@@ -521,6 +549,7 @@ let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetMa
             let ((_, subscriber, hashtag, _): Tuple<string, string, string, string>) = downcast message
             let clientPath = sprintf "%A" sender.Path
             userManagementRef <! Subscribe(subscriber, hashtag, clientPath)
+            requests <- requests + 1.0
 
         | "AcknowledgeSubscribeRequest" ->
             let ((_, follower, hashtag, clientPath): Tuple<string, string, string, string>) = downcast message
@@ -530,22 +559,37 @@ let serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetMa
         | "Tweet" ->
             let ((_, username, tweet, _): Tuple<string, string, string, string>) = downcast message
             tweetManagementRef <! Tweet(username, tweet)
+            requests <- requests + 1.0
 
         | "Retweet" ->
             let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
             tweetManagementRef <! RandomRetweet(username)
+            requests <- requests + 1.0
 
         | "QueryTweetsSubscribedTo" ->
             let ((_, username, _, _): Tuple<string, string, string, string>) = downcast message
             newsFeedRef <! QueryTweetsSubscribedTo(username)
+            requests <- requests + 1.0
 
         | "QueryTweetsWithHashtag" ->
             let ((_, hashtag, _, _): Tuple<string, string, string, string>) = downcast message
             tweetParserRef <! QueryTweetsWithHashtag(hashtag)
+            requests <- requests + 1.0
 
         | "QueryTweetsWithMentions" ->
             let ((_, mentions, _, _): Tuple<string, string, string, string>) = downcast message
             mentionsRef <! QuerytweetsWithMentions(mentions)
+            requests <- requests + 1.0
+
+        | "PrintPerfStats" ->
+            let timeDiff = (DateTime.Now - startTime).TotalSeconds |> float
+            if requests > 0.0 then
+                let averageRequestsPerSecond = requests / timeDiff
+                File.AppendAllText(perfStatsPath, (sprintf "%f, %f, %f\n" (Math.Round requests) (Math.Round (timeDiff, 2)) (Math.Round (averageRequestsPerSecond, 2))))
+            mailbox.Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMilliseconds(5000.0), mailbox.Self, ("PrintPerfStats", "", "", ""))
+
+        | _ ->
+            ignore()
 
         return! loop ()
     }
@@ -569,56 +613,18 @@ let main argv =
             }"
     let system = System.create "TwitterEngine" config
 
+    let perfStatsPath = "perfStats.txt"
+
     // Create all services
-    let userManagementRef = spawn system "userManagementActor" userManagementActor
+    let perfStatsRef = spawn system "perStatsActor" (perfStatsActor perfStatsPath)
+    let userManagementRef = spawn system "userManagementActor" (userManagementActor perfStatsRef)
     let newsFeedRef = spawn system "newsFeedActor" (newsFeedActor userManagementRef)
     let mentionsRef = spawn system "mentionsActor" (mentionsFeedActor userManagementRef)
     let tweetParserRef = spawn system "tweetParserActor" (tweetParserActor userManagementRef newsFeedRef mentionsRef)
     let tweetManagementRef = spawn system "tweetManagementActor" (tweetManagementActor userManagementRef newsFeedRef tweetParserRef)
-    let serverRef = spawn system "serverActor" (serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetManagementRef)
+    let serverRef = spawn system "serverActor" (serverActor userManagementRef newsFeedRef mentionsRef tweetParserRef tweetManagementRef perfStatsPath)
 
-    // // User registration
-    // userManagementRef <! Register("nikhil_saoji", "nikhil_saoji")
-    // userManagementRef <! Register("gauri_bodke", "gauri_bodke")
-    // userManagementRef <! Register("prasad_hadkar", "prasad_hadkar")
+    serverRef <! ("Start", "", "", "")
 
-    // // Login
-    // userManagementRef <! Login("nikhil_saoji", "nikhil_saoji")
-    // userManagementRef <! Login("gauri_bodke", "gauri_bodke")
-    // userManagementRef <! Login("prasad_hadkar", "prasad_hadkar")
-
-    // // // Logout
-    // // userManagementRef <! Logout("nikhil_saoji")
-    // // userManagementRef <! Logout("gauri_bodke")
-    // // userManagementRef <! Logout("prasad_hadkar")
-
-    // // Follow
-    // userManagementRef <! Follow("nikhil_saoji", "gauri_bodke")
-    // userManagementRef <! Follow("nikhil_saoji", "prasad_hadkar")
-    // userManagementRef <! Follow("prasad_hadkar", "gauri_bodke")
-    // userManagementRef <! Follow("gauri_bodke", "prasad_hadkar")
-
-    // // Tweet
-    // tweetManagementRef <! Tweet("gauri_bodke", "My name is Gauri #uf #hello. @nikhil_saoji")
-    // tweetManagementRef <! Tweet("gauri_bodke", "I study at UF #uf #corona @prasad_hadkar")
-    // tweetManagementRef <! Tweet("nikhil_saoji", "Hello! #corona @gauri_bodke @prasad_hadkar")
-    // tweetManagementRef <! Tweet("prasad_hadkar", "I love cricket #bye")
-
-    // // Retweet
-    // tweetManagementRef <! Retweet("gauri_bodke", 2);
-    // tweetManagementRef <! Retweet("nikhil_saoji", 1);
-
-    // // Subscribe
-    // Thread.Sleep(5000)
-    // userManagementRef <! Subscribe("gauri_bodke", "#uf");
-    // tweetManagementRef <! Tweet("nikhil_saoji", "I study at #uf");
-    // Thread.Sleep(1000)
-    // newsFeedRef <! QueryTweetsSubscribedTo("nikhil_saoji")
-    // Thread.Sleep(1000)
-    // tweetParserRef <! QueryTweetsWithHashtag("#uf")
-    // Thread.Sleep(1000)
-    // mentionsRef <! QuerytweetsWithMentions("prasad_hadkar")
-
-
-    Thread.Sleep(600000)
+    Thread.Sleep(6000000)
     0 // return an integer exit code
